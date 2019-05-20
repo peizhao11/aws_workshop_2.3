@@ -1,0 +1,6 @@
+---
+- hosts: part4
+  connection: local
+  gather_facts: False
+  roles:
+    - part4

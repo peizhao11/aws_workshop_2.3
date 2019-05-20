@@ -1,0 +1,21 @@
+---
+  - name: Dynamic-web-application-with-https-part3
+    cloudformation:
+      stack_name: "Dynamic-web-application-with-https-part3"
+      state: present
+      region: "{{aws_region}}"
+      disable_rollback: true
+      template: "cloudformation/part3.yml"
+      stack_policy: "policies/stack-policy.json"
+      template_parameters:
+        VpcId: "{{vpc_id}}"
+        Subnets: "{{subnets}}"
+        AvailabilityZones: "{{availability_zones}}"
+        CertificateARN: "{{cert_arn}}"
+        InstanceType: "{{instance_type}}"
+        ImageId: "{{image_id}}"
+        KeyName: "{{key_name}}"
+        HostedZoneName: "{{hosted_zone_name}}"
+        RecordName: "{{record_name}}"
+        ASGMaxSize: "{{as_max}}"
+        ASGMinSize: "{{as_min}}"

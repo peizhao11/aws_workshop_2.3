@@ -1,0 +1,10 @@
+aws_region: ap-southeast-1
+vpc_id: vpc-0b33136c
+subnets: subnet-3d1d1874,subnet-9df535c4,subnet-a3eaffc4
+availability_zones: ap-southeast-1a,ap-southeast-1b,ap-southeast-1c
+image_id:ami-085fd1bd447be68e8
+instance_type:t2.micro
+hosted_zone_name: aws-training-xian.com.
+as_max: 1
+as_min: 1
+key_name:zp-aws

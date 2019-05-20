@@ -1,0 +1,322 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Jenkins Stack
+Parameters:
+  AvailabilityZones:
+    Description: The availability zones in the VPC
+    Type: CommaDelimitedList
+  PublicSubnets:
+    Description: The public subnets in the VPC
+    Type: CommaDelimitedList
+  KeyName:
+    Description: Name of an existing EC2 KeyPair to enable SSH access
+    Type: String
+  HostedZoneName:
+    Description: The Route53 Zone in which to create records
+    Type: String
+  RecordName:
+    Description: The name of the DNS record to create.
+    Type: String
+  AMI:
+    Description: The AMI id of the Platform image.
+    Type: String
+    MinLength: 12
+    MaxLength: 12
+    AllowedPattern: ami-[a-f0-9]{8}
+  InstanceType:
+    Description: The Instance type which used to build stack.
+    Type: String
+  VpcID:
+    Description: The private Subnet ID in VPC that has connection to Equinix.
+    Type: String
+    AllowedPattern: vpc-[a-f0-9]{8}
+  ASGMaxSize:
+    Description: AutoScaling max size
+    Type: Number
+    Default: 1
+  ASGMinSize:
+    Description: AutoScaling min size
+    Type: Number
+    Default: 1
+  Version:
+    Description: Build Version
+    Type: String
+  ResourceBucketName:
+    Description: Name of the S3 bucket containing all rpm packages
+    Type: String
+  SSLCertArn:
+    Description: ssl cert arn
+    Type: String
+Resources:
+  Role:
+    Type: AWS::IAM::Role
+    Properties:
+      Path: /
+      AssumeRolePolicyDocument:
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service: [ec2.amazonaws.com]
+          Action:
+          - sts:AssumeRole
+      Policies:
+      - PolicyName: permit-cfn
+        PolicyDocument:
+          Statement:
+          - Effect: Allow
+            Action:
+             - "cloudformation:*"
+             - "ec2:*"
+             - "ecs:*"
+             - "ecr:*"
+             - "iam:*"
+             - "autoScaling:*"
+             - "cloudWatch:*"
+             - "sts:*"
+             - "elasticLoadBalancing:*"
+             - "s3:*"
+             - "route53:*"
+             - "logs:*"
+             - "application-autoscaling:*"
+             - "batch:*"
+             - "lambda:*"
+             - "events:*"
+            Resource: '*'
+  JenkinsRecordSet:
+    Type: AWS::Route53::RecordSet
+    Properties:
+      HostedZoneName: !Sub "${HostedZoneName}."
+      Name: !Sub "${RecordName}-${Version}.${HostedZoneName}."
+      Type: CNAME
+      TTL: 60
+      ResourceRecords:
+      - !GetAtt [LoadBalancer, DNSName]
+  LoadBalancer:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Scheme: internet-facing
+      Subnets:
+        Ref: PublicSubnets
+      SecurityGroups:
+        - Ref: ALBConnectionSecurityGroup
+  ALBConnectionSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Allowing Jenkins client connection
+      SecurityGroupIngress:
+      - CidrIp: 0.0.0.0/0
+        IpProtocol: tcp
+        FromPort: 80
+        ToPort: 80
+      - CidrIp: 0.0.0.0/0
+        IpProtocol: tcp
+        FromPort: 443
+        ToPort: 443
+      VpcId:
+        Ref: VpcID
+  ALBHTPPListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn:
+            Ref: ALBTargetGroup
+      LoadBalancerArn:
+        Ref: LoadBalancer
+      Port: 80
+      Protocol: HTTP
+  ALBHTTPSListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      Certificates:
+        - CertificateArn: !Ref SSLCertArn
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn:
+            Ref: ALBTargetGroup
+      LoadBalancerArn:
+        Ref: LoadBalancer
+      Port: 443
+      Protocol: HTTPS
+  ALBTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      HealthCheckIntervalSeconds: 10
+      HealthCheckProtocol: HTTP
+      HealthCheckTimeoutSeconds: 5
+      HealthyThresholdCount: 5
+      Matcher:
+        HttpCode: 200
+      Name: 'jenkins-target-group'
+      Protocol: HTTP
+      Port: 8080
+      HealthCheckPath: '/login'
+      UnhealthyThresholdCount: 3
+      VpcId:
+        Ref: VpcID
+      TargetGroupAttributes:
+        - Key: deregistration_delay.timeout_seconds
+          Value: 120
+  JenkinsASGroup:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    Properties:
+      AvailabilityZones: !Ref AvailabilityZones
+      VPCZoneIdentifier: !Ref PublicSubnets
+      HealthCheckGracePeriod: 1000
+      HealthCheckType: ELB
+      LaunchConfigurationName: !Ref JenkinsASLaunchConf
+      MinSize: !Ref ASGMinSize
+      MaxSize: !Ref ASGMaxSize
+      TargetGroupARNs:
+      - !Ref ALBTargetGroup
+  JenkinsASLaunchConf:
+    Type: AWS::AutoScaling::LaunchConfiguration
+    Metadata:
+      AWS::CloudFormation::Init:
+        configSets:
+          InstallAndRun: [Install]
+        Install:
+          files:
+            /usr/local/bin/jenkins-restore:
+              content: !Sub |
+                #!/bin/bash -e
+                USAGE="Usage: $0 S3_TARGET JENKINS_HOME"
+
+                S3_TARGET=$1
+                JENKINS_HOME=$2
+
+                if [[ -z "`echo $S3_TARGET | grep '^s3://'`" ]]; then
+                  echo -e $USAGE
+                  exit 1
+                fi
+
+                if [[ $S3_TARGET == */ ]]; then
+                  S3_TARGET=$S3_TARGET`aws s3 ls $S3_TARGET | tail -1 | awk '{print $NF}'`
+                fi
+
+                LOCAL_BACKUP=/tmp/`basename $S3_TARGET`
+                if [[ -d "$LOCAL_BACKUP" ]]; then
+                  rm -rf $LOCAL_BACKUP
+                fi
+
+                aws s3 cp $S3_TARGET $LOCAL_BACKUP
+
+                if [[ -d "$JENKINS_HOME" ]]; then
+                  rm -rf $JENKINS_HOME
+                fi
+
+                mkdir -p $JENKINS_HOME
+
+                tar zxf $LOCAL_BACKUP -C $JENKINS_HOME
+                rm -f $LOCAL_BACKUP
+              mode: '000755'
+              owner: root
+              group: root
+            /usr/local/bin/jenkins-backup:
+              content: !Sub |
+                #!/bin/bash -e
+                USAGE="Usage: $0 JENKINS_HOME S3_TARGET"
+
+                JENKINS_HOME=$1
+                S3_TARGET=$2
+
+                if [[ -z "`echo $S3_TARGET | grep '^s3://'`" || ! -d "$JENKINS_HOME" ]]; then
+                  echo -e $USAGE
+                  exit 1
+                fi
+
+                LOCAL_BACKUP=/tmp/`basename $S3_TARGET`
+
+                tar -C $JENKINS_HOME -zcf $LOCAL_BACKUP . \
+                  --exclude "config-history/" \
+                  --exclude "config-history/*" \
+                  --exclude "jobs/*/workspace*" \
+                  --exclude "jobs/*/builds/*/archive" \
+                  --exclude "plugins/*/*" \
+                  --exclude "plugins/*.bak" \
+                  --exclude "war" \
+                  --exclude "cache"
+
+                aws s3 cp $LOCAL_BACKUP $S3_TARGET
+                rm -f $LOCAL_BACKUP
+              mode: '000755'
+              owner: root
+              group: root
+            /etc/cron.d/jenkins:
+              content: !Sub |
+                PATH=/bin:/usr/bin:/usr/local/bin
+                59 0 * * * root jenkins-backup /var/lib/jenkins s3://{{s3_bucket}}/jenkins-`date +\%Y\%m\%d\%H\%M.tar.gz` >> /var/log/jenkins-backup.log 2>&1
+              context:
+                s3_bucket: !Ref ResourceBucketName
+              mode: '000644'
+              owner: root
+              group: root
+    Properties:
+      InstanceType: !Ref InstanceType
+      ImageId: !Ref AMI
+      SecurityGroups:
+      - !Ref JenkinsSSHSecurityGroup
+      - !Ref JenkinsConnectionSecurityGroup
+      KeyName: !Ref KeyName
+      IamInstanceProfile: !Ref InstanceProfile
+      UserData:
+        "Fn::Base64": !Sub |
+          #!/bin/bash -ex
+          function error_exit
+          {
+            /opt/aws/bin/cfn-signal -e 1 -r $1 ${WaitHandle}
+            exit 1
+          }
+
+          yum update -y
+
+          /opt/aws/bin/cfn-init -s ${AWS::StackName} -r JenkinsASLaunchConf  --region ${AWS::Region} --configsets InstallAndRun --role ${Role}|| error_exit 'Failed to run cfn-init'
+
+          /etc/init.d/crond restart
+
+          /usr/local/bin/jenkins-restore s3://${ResourceBucketName}/ /var/lib/jenkins || true
+
+          yum remove -y java-1.7.0-openjdk
+          yum install -y java-1.8.0
+          wget -O /etc/yum.repos.d/jenkins.repo http://pkg.jenkins-ci.org/redhat/jenkins.repo
+          rpm --import https://jenkins-ci.org/redhat/jenkins-ci.org.key
+          yum install -y jenkins
+          service jenkins start
+
+          /opt/aws/bin/cfn-signal -e 0 -r "Jenkins instance Stack Complete." '${WaitHandle}'
+  InstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Path: /
+      Roles:
+      - !Ref Role
+  JenkinsSSHSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Allowing incoming on ssh port
+      SecurityGroupIngress:
+      - CidrIp: 0.0.0.0/0
+        IpProtocol: '-1'
+        FromPort: 0
+        ToPort: 0
+      - CidrIp: 0.0.0.0/0
+        IpProtocol: tcp
+        FromPort: 22
+        ToPort: 22
+      VpcId: !Ref VpcID
+  JenkinsConnectionSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Allowing Jenkins client connection
+      SecurityGroupIngress:
+      - CidrIp: 0.0.0.0/0
+        IpProtocol: tcp
+        FromPort: 8080
+        ToPort: 8080
+      VpcId: !Ref VpcID
+  WaitHandle:
+    Type: AWS::CloudFormation::WaitConditionHandle
+  WaitCondition:
+    Type: AWS::CloudFormation::WaitCondition
+    Properties:
+      Handle: !Ref WaitHandle
+      Timeout: 1500

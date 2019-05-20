@@ -1,0 +1,25 @@
+---
+  - name: Dynamic-web-application-with-recovery-part4
+    cloudformation:
+      stack_name: "Dynamic-web-application-with-recovery-part4"
+      state: present
+      region: "{{aws_region}}"
+      disable_rollback: true
+      template: "cloudformation/part4.yml"
+      stack_policy: "aws/policies/stack-policy.json"
+      template_parameters:
+        AMI: "{{image_id}}"
+        InstanceType: "{{instance_type}}"
+        KeyName: "{{key_name}}"
+        VpcID: "{{vpc_id}}"
+        HostedZoneName: "{{hosted_zone_name}}"
+        RecordName: "{{record_name}}"
+        AvailabilityZones: "{{availability_zones}}"
+        PublicSubnets: "{{subnets}}"
+        ASGMaxSize: "{{as_max}}"
+        ASGMinSize: "{{as_min}}"
+        ResourceBucketName: "{{resource_bucket_name}}"
+        SSLCertArn: "{{cert_arn}}"
+      tags:
+        project: "{{project}}"
+        application: "{{application}}"
