@@ -1,2 +1,2 @@
-record_name: zhaopei-3.aws-training-xian.com
-cert_arn: arn:aws:acm:ap-southeast-1:384406771268:certificate/574e1896-9189-4e74-b15c-67d9bb04a30f
+record_name: zhaopei-4.aws-training-xian.com
+cert_arn: arn:aws:acm:ap-southeast-1:384406771268:certificate/32148ce5-cb0a-4ecb-9cfe-80c6c0c93d12

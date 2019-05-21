@@ -1,34 +1,25 @@
 AWSTemplateFormatVersion: '2010-09-09'
-Description: Jenkins Stack
+Description: Dynamic-web-application-with-recovery-part4
 Parameters:
-  AvailabilityZones:
-    Description: The availability zones in the VPC
-    Type: CommaDelimitedList
-  PublicSubnets:
-    Description: The public subnets in the VPC
-    Type: CommaDelimitedList
-  KeyName:
-    Description: Name of an existing EC2 KeyPair to enable SSH access
-    Type: String
-  HostedZoneName:
-    Description: The Route53 Zone in which to create records
-    Type: String
-  RecordName:
-    Description: The name of the DNS record to create.
-    Type: String
-  AMI:
-    Description: The AMI id of the Platform image.
-    Type: String
-    MinLength: 12
-    MaxLength: 12
-    AllowedPattern: ami-[a-f0-9]{8}
-  InstanceType:
-    Description: The Instance type which used to build stack.
-    Type: String
   VpcID:
     Description: The private Subnet ID in VPC that has connection to Equinix.
     Type: String
     AllowedPattern: vpc-[a-f0-9]{8}
+  PublicSubnets:
+    Description: The public subnets in the VPC
+    Type: CommaDelimitedList
+  AvailabilityZones:
+    Description: The availability zones in the VPC
+    Type: CommaDelimitedList
+  KeyName:
+    Description: Name of an existing EC2 KeyPair to enable SSH access
+    Type: String
+  InstanceType:
+    Description: The Instance type which used to build stack.
+    Type: String
+  AMI:
+    Description: The AMI id of the Platform image.
+    Type: String
   ASGMaxSize:
     Description: AutoScaling max size
     Type: Number
@@ -37,16 +28,27 @@ Parameters:
     Description: AutoScaling min size
     Type: Number
     Default: 1
-  Version:
-    Description: Build Version
+  SSLCertArn:
+    Description: ssl cert arn
     Type: String
   ResourceBucketName:
     Description: Name of the S3 bucket containing all rpm packages
     Type: String
-  SSLCertArn:
-    Description: ssl cert arn
+  HostedZoneName:
+    Description: The Route53 Zone in which to create records
     Type: String
+  RecordName:
+    Description: The name of the DNS record to create.
+    Type: String
+
 Resources:
+  InstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Path: /
+      Roles:
+      - !Ref Role
+
   Role:
     Type: AWS::IAM::Role
     Properties:
@@ -64,44 +66,20 @@ Resources:
           Statement:
           - Effect: Allow
             Action:
-             - "cloudformation:*"
-             - "ec2:*"
-             - "ecs:*"
-             - "ecr:*"
-             - "iam:*"
-             - "autoScaling:*"
-             - "cloudWatch:*"
-             - "sts:*"
-             - "elasticLoadBalancing:*"
-             - "s3:*"
-             - "route53:*"
-             - "logs:*"
-             - "application-autoscaling:*"
-             - "batch:*"
-             - "lambda:*"
-             - "events:*"
+              - application-autoscaling:*
+              - cloudformation:*
+              - iam:*
+              - ec2:*
+              - route53:*
+              - s3:*
+              - sts:AssumeRole
             Resource: '*'
-  JenkinsRecordSet:
-    Type: AWS::Route53::RecordSet
-    Properties:
-      HostedZoneName: !Sub "${HostedZoneName}."
-      Name: !Sub "${RecordName}-${Version}.${HostedZoneName}."
-      Type: CNAME
-      TTL: 60
-      ResourceRecords:
-      - !GetAtt [LoadBalancer, DNSName]
-  LoadBalancer:
-    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
-    Properties:
-      Scheme: internet-facing
-      Subnets:
-        Ref: PublicSubnets
-      SecurityGroups:
-        - Ref: ALBConnectionSecurityGroup
-  ALBConnectionSecurityGroup:
+
+  ALBSecurityGroup:
     Type: AWS::EC2::SecurityGroup
     Properties:
-      GroupDescription: Allowing Jenkins client connection
+      GroupDescription: Security group for ALB
+      VpcId: !Ref VpcID
       SecurityGroupIngress:
       - CidrIp: 0.0.0.0/0
         IpProtocol: tcp
@@ -111,63 +89,73 @@ Resources:
         IpProtocol: tcp
         FromPort: 443
         ToPort: 443
-      VpcId:
-        Ref: VpcID
+
+  ApplicationLoadBalancer:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Scheme: internet-facing
+      Type: application
+      Subnets: !Ref PublicSubnets
+      SecurityGroups:
+        - !Ref ALBSecurityGroup
+
   ALBHTPPListener:
     Type: AWS::ElasticLoadBalancingV2::Listener
     Properties:
-      DefaultActions:
-        - Type: forward
-          TargetGroupArn:
-            Ref: ALBTargetGroup
-      LoadBalancerArn:
-        Ref: LoadBalancer
+      LoadBalancerArn: !Ref ApplicationLoadBalancer
       Port: 80
       Protocol: HTTP
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref ALBTargetGroup
+
   ALBHTTPSListener:
     Type: AWS::ElasticLoadBalancingV2::Listener
     Properties:
       Certificates:
         - CertificateArn: !Ref SSLCertArn
-      DefaultActions:
-        - Type: forward
-          TargetGroupArn:
-            Ref: ALBTargetGroup
-      LoadBalancerArn:
-        Ref: LoadBalancer
+      LoadBalancerArn: !Ref ApplicationLoadBalancer
       Port: 443
       Protocol: HTTPS
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref ALBTargetGroup
+
   ALBTargetGroup:
     Type: AWS::ElasticLoadBalancingV2::TargetGroup
     Properties:
-      HealthCheckIntervalSeconds: 10
-      HealthCheckProtocol: HTTP
-      HealthCheckTimeoutSeconds: 5
-      HealthyThresholdCount: 5
-      Matcher:
-        HttpCode: 200
       Name: 'jenkins-target-group'
       Protocol: HTTP
       Port: 8080
-      HealthCheckPath: '/login'
-      UnhealthyThresholdCount: 3
-      VpcId:
-        Ref: VpcID
+      HealthCheckProtocol: HTTP
+      HealthCheckTimeoutSeconds: 5
+      HealthCheckIntervalSeconds: 30
+      HealthyThresholdCount: 5
+      UnhealthyThresholdCount: 2
+      HealthCheckPath: /login
+      HealthCheckPort: traffic-port
+      Matcher:
+        HttpCode: 200-399
+      VpcId: !Ref VpcID
       TargetGroupAttributes:
         - Key: deregistration_delay.timeout_seconds
           Value: 120
-  JenkinsASGroup:
-    Type: AWS::AutoScaling::AutoScalingGroup
+
+  EC2SecurityGroup:
+    Type: AWS::EC2::SecurityGroup
     Properties:
-      AvailabilityZones: !Ref AvailabilityZones
-      VPCZoneIdentifier: !Ref PublicSubnets
-      HealthCheckGracePeriod: 1000
-      HealthCheckType: ELB
-      LaunchConfigurationName: !Ref JenkinsASLaunchConf
-      MinSize: !Ref ASGMinSize
-      MaxSize: !Ref ASGMaxSize
-      TargetGroupARNs:
-      - !Ref ALBTargetGroup
+      GroupDescription: For EC2 Instance
+      VpcId: !Ref VpcID
+      SecurityGroupIngress:
+      - IpProtocol: tcp
+        FromPort: 8080
+        ToPort: 8080
+        CidrIp: 0.0.0.0/0
+      - IpProtocol: tcp
+        FromPort: 22
+        ToPort: 22
+        CidrIp: 0.0.0.0/0
+
   JenkinsASLaunchConf:
     Type: AWS::AutoScaling::LaunchConfiguration
     Metadata:
@@ -241,25 +229,15 @@ Resources:
               mode: '000755'
               owner: root
               group: root
-            /etc/cron.d/jenkins:
-              content: !Sub |
-                PATH=/bin:/usr/bin:/usr/local/bin
-                59 0 * * * root jenkins-backup /var/lib/jenkins s3://{{s3_bucket}}/jenkins-`date +\%Y\%m\%d\%H\%M.tar.gz` >> /var/log/jenkins-backup.log 2>&1
-              context:
-                s3_bucket: !Ref ResourceBucketName
-              mode: '000644'
-              owner: root
-              group: root
     Properties:
       InstanceType: !Ref InstanceType
       ImageId: !Ref AMI
       SecurityGroups:
-      - !Ref JenkinsSSHSecurityGroup
-      - !Ref JenkinsConnectionSecurityGroup
+      - !Ref EC2SecurityGroup
       KeyName: !Ref KeyName
       IamInstanceProfile: !Ref InstanceProfile
       UserData:
-        "Fn::Base64": !Sub |
+        Fn::Base64: !Sub |
           #!/bin/bash -ex
           function error_exit
           {
@@ -271,52 +249,49 @@ Resources:
 
           /opt/aws/bin/cfn-init -s ${AWS::StackName} -r JenkinsASLaunchConf  --region ${AWS::Region} --configsets InstallAndRun --role ${Role}|| error_exit 'Failed to run cfn-init'
 
-          /etc/init.d/crond restart
+          echo "*/5 * * * * /usr/local/bin/jenkins-backup /var/lib/jenkins s3://${ResourceBucketName}/jenkins-`date +\%Y\%m\%d\%H\%M.` >> /var/log/jenkins-backup.log 2>&1" >> /var/spool/cron/root
 
           /usr/local/bin/jenkins-restore s3://${ResourceBucketName}/ /var/lib/jenkins || true
 
-          yum remove -y java-1.7.0-openjdk
-          yum install -y java-1.8.0
-          wget -O /etc/yum.repos.d/jenkins.repo http://pkg.jenkins-ci.org/redhat/jenkins.repo
-          rpm --import https://jenkins-ci.org/redhat/jenkins-ci.org.key
-          yum install -y jenkins
-          service jenkins start
-
+          sudo wget -O /etc/yum.repos.d/jenkins.repo http://pkg.jenkins.io/redhat-stable/jenkins.repo
+          echo "enabled=1" >> /etc/yum.repos.d/jenkins.repo
+          sudo rpm --import http://pkg.jenkins.io/redhat-stable/jenkins.io.key
+          sudo yum -y update
+          sudo yum install -y java-1.8.0-openjdk.x86_64 jenkins python-pip git
+          sudo service jenkins restart
           /opt/aws/bin/cfn-signal -e 0 -r "Jenkins instance Stack Complete." '${WaitHandle}'
-  InstanceProfile:
-    Type: AWS::IAM::InstanceProfile
+
+  AutoScalingGroup:
+    Type: AWS::AutoScaling::AutoScalingGroup
     Properties:
-      Path: /
-      Roles:
-      - !Ref Role
-  JenkinsSSHSecurityGroup:
-    Type: AWS::EC2::SecurityGroup
-    Properties:
-      GroupDescription: Allowing incoming on ssh port
-      SecurityGroupIngress:
-      - CidrIp: 0.0.0.0/0
-        IpProtocol: '-1'
-        FromPort: 0
-        ToPort: 0
-      - CidrIp: 0.0.0.0/0
-        IpProtocol: tcp
-        FromPort: 22
-        ToPort: 22
-      VpcId: !Ref VpcID
-  JenkinsConnectionSecurityGroup:
-    Type: AWS::EC2::SecurityGroup
-    Properties:
-      GroupDescription: Allowing Jenkins client connection
-      SecurityGroupIngress:
-      - CidrIp: 0.0.0.0/0
-        IpProtocol: tcp
-        FromPort: 8080
-        ToPort: 8080
-      VpcId: !Ref VpcID
+      AvailabilityZones: !Ref AvailabilityZones
+      VPCZoneIdentifier: !Ref PublicSubnets
+      Cooldown: 300
+      HealthCheckGracePeriod: 600
+      HealthCheckType: ELB
+      LaunchConfigurationName: !Ref JenkinsASLaunchConf
+      MinSize: !Ref ASGMinSize
+      MaxSize: !Ref ASGMaxSize
+      TargetGroupARNs:
+      - !Ref ALBTargetGroup
+
   WaitHandle:
     Type: AWS::CloudFormation::WaitConditionHandle
+
   WaitCondition:
     Type: AWS::CloudFormation::WaitCondition
     Properties:
       Handle: !Ref WaitHandle
-      Timeout: 1500
+      Timeout: 1000
+
+  JenkinsRecordSet:
+    Type: AWS::Route53::RecordSet
+    Properties:
+      Name: !Ref RecordName
+      HostedZoneName: !Ref HostedZoneName
+      Type: CNAME
+      Type: A
+      AliasTarget:
+        DNSName: !GetAtt ApplicationLoadBalancer.DNSName
+        EvaluateTargetHealth: true
+        HostedZoneId: !GetAtt ApplicationLoadBalancer.CanonicalHostedZoneID

@@ -1,27 +1,27 @@
 Description: Dynamic-Web-Appliction-with-https-part3
 Parameters:
-  VpcId:
+  VpcID:
     Type: String
+    AllowedPattern: vpc-[a-f0-9]{8}
     Description: Vpc ID
-  Subnets:
+  PublicSubnets:
     Type: CommaDelimitedList
-    Description: The subnets which the ELB is hosted.
+    Description: The public subnets which the ELB is hosted.
   AvailabilityZones:
     Type: CommaDelimitedList
     Description: The availability zones in the VPC
-  CertificateARN:
-    Type: String
-    Description: The Certificate Manager arn
-  InstanceType:
-    Type: String
-    Description: Instance Type
-    Default: t2.micro
-  ImageId:
-    Type: String
-    Description: Image ID
   KeyName:
     Type: String
     Description: The key name for ec2 secret key
+  InstanceType:
+    Type: String
+    Description: The Instance type which used to build stack.
+  ImageId:
+    Type: String
+    Description: The AMI id of the Platform image.
+  SSLCertArn:
+    Type: String
+    Description: The Certificate Manager arn
   HostedZoneName:
     Type: String
     Description: Hosted Zone Name
@@ -74,7 +74,7 @@ Resources:
     Type: AWS::EC2::SecurityGroup
     Properties:
       GroupDescription: Security group for ALB
-      VpcId: !Ref VpcId
+      VpcId: !Ref VpcID
       SecurityGroupIngress:
       - IpProtocol: tcp
         FromPort: 80
@@ -90,10 +90,9 @@ Resources:
     Properties:
       Scheme: internet-facing
       Type: application
-      Subnets: !Ref Subnets
-      IpAddressType: ipv4
+      Subnets: !Ref PublicSubnets
       SecurityGroups:
-      - !Ref ALBSecurityGroup
+        - !Ref ALBSecurityGroup
 
   ALBListenerForHttp:
     Type: AWS::ElasticLoadBalancingV2::Listener
@@ -115,17 +114,18 @@ Resources:
       - Type: forward
         TargetGroupArn: !Ref ALBTargetGroup
       Certificates:
-      - CertificateArn: !Ref CertificateARN
+      - CertificateArn: !Ref SSLCertArn
 
   ALBTargetGroup:
     Type: AWS::ElasticLoadBalancingV2::TargetGroup
     Properties:
+      Name: 'jenkins-target-group'
       Protocol: HTTP
       Port: 8080
       TargetType: instance
       Matcher:
         HttpCode: 200-399
-      VpcId: !Ref VpcId
+      VpcId: !Ref VpcID
       HealthyThresholdCount: 5
       UnhealthyThresholdCount: 2
       HealthCheckTimeoutSeconds: 5
@@ -138,7 +138,7 @@ Resources:
     Type: AWS::EC2::SecurityGroup
     Properties:
       GroupDescription: For EC2 Instance
-      VpcId: !Ref VpcId
+      VpcId: !Ref VpcID
       SecurityGroupIngress:
       - IpProtocol: tcp
         FromPort: 8080
@@ -165,17 +165,17 @@ Resources:
             DeleteOnTermination: true
         KeyName: !Ref KeyName
         UserData:
-           Fn::Base64: !Sub |
-              #!/bin/bash -ex
+          Fn::Base64: !Sub |
+            #!/bin/bash -ex
+            # Install Jenkins
+            sudo wget -O /etc/yum.repos.d/jenkins.repo http://pkg.jenkins.io/redhat-stable/jenkins.repo
+            echo "enabled=1" >> /etc/yum.repos.d/jenkins.repo
+            sudo rpm --import http://pkg.jenkins.io/redhat-stable/jenkins.io.key
+            sudo yum -y update
+            sudo yum install -y java-1.8.0-openjdk.x86_64 jenkins python-pip git
+            sudo service jenkins restart
 
-              # Install Jenkins
-              sudo wget -O /etc/yum.repos.d/jenkins.repo http://pkg.jenkins.io/redhat-stable/jenkins.repo
-              echo "enabled=1" >> /etc/yum.repos.d/jenkins.repo
-              sudo rpm --import http://pkg.jenkins.io/redhat-stable/jenkins.io.key
-              sudo yum -y update
-              sudo yum install -y java-1.8.0-openjdk.x86_64 jenkins python-pip git
-              sudo service jenkins restart
-              sudo usermod -a -G root jenkins
+            /opt/aws/bin/cfn-signal -e 0 -r "Jenkins instance Stack Complete." '${WaitHandle}'
 
   AutoScalingGroup:
     Type: AWS::AutoScaling::AutoScalingGroup
@@ -185,13 +185,22 @@ Resources:
       Cooldown: 300
       HealthCheckGracePeriod: 600
       HealthCheckType: ELB
-      MinSize: !Ref MinSize
-      MaxSize: !Ref MaxSize
+      MinSize: !Ref ASGMinSize
+      MaxSize: !Ref ASGMaxSize
       TargetGroupARNs:
       - !Ref ALBTargetGroup
-      VPCZoneIdentifier: !Ref Subnets
+      VPCZoneIdentifier: !Ref PublicSubnets
 
-  RecordSet:
+  WaitHandle:
+    Type: AWS::CloudFormation::WaitConditionHandle
+
+  WaitCondition:
+    Type: AWS::CloudFormation::WaitCondition
+    Properties:
+      Handle: !Ref WaitHandle
+      Timeout: 1500
+
+  JenkinsRecordSet:
     Type: AWS::Route53::RecordSet
     Properties:
       Name: !Ref RecordName

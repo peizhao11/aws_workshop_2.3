@@ -8,10 +8,10 @@
       template: "cloudformation/part3.yml"
       stack_policy: "policies/stack-policy.json"
       template_parameters:
-        VpcId: "{{vpc_id}}"
-        Subnets: "{{subnets}}"
+        VpcID: "{{vpc_id}}"
+        PublicSubnets: "{{subnets}}"
         AvailabilityZones: "{{availability_zones}}"
-        CertificateARN: "{{cert_arn}}"
+        SSLCertArn: "{{cert_arn}}"
         InstanceType: "{{instance_type}}"
         ImageId: "{{image_id}}"
         KeyName: "{{key_name}}"

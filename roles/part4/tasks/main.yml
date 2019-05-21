@@ -6,7 +6,7 @@
       region: "{{aws_region}}"
       disable_rollback: true
       template: "cloudformation/part4.yml"
-      stack_policy: "aws/policies/stack-policy.json"
+      stack_policy: "policies/stack-policy.json"
       template_parameters:
         AMI: "{{image_id}}"
         InstanceType: "{{instance_type}}"
@@ -20,6 +20,3 @@
         ASGMinSize: "{{as_min}}"
         ResourceBucketName: "{{resource_bucket_name}}"
         SSLCertArn: "{{cert_arn}}"
-      tags:
-        project: "{{project}}"
-        application: "{{application}}"
